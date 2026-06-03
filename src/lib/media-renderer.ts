@@ -168,3 +168,50 @@ export function renderVideoFrame(
     buildVideoFrameSvg({ width, height, sceneIndex, heading, action, dialogue, variant, language })
   );
 }
+
+export function renderCharacterPortrait(
+  name: string,
+  role: string,
+  appearance: string,
+  variant: number
+): string {
+  const palette = PALETTES[variant % PALETTES.length];
+  const appearanceLines = wrapText(appearance, 14, 3);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="400" viewBox="0 0 320 400">
+  <defs>
+    <linearGradient id="cp" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="${palette.from}"/>
+      <stop offset="100%" stop-color="${palette.to}"/>
+    </linearGradient>
+  </defs>
+  <rect width="320" height="400" fill="url(#cp)"/>
+  <circle cx="160" cy="120" r="64" fill="rgba(255,255,255,0.25)"/>
+  <text x="160" y="132" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="48" font-weight="800">${escapeXml(name.slice(0, 1))}</text>
+  <text x="160" y="230" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="36" font-weight="800">${escapeXml(name)}</text>
+  <text x="160" y="270" text-anchor="middle" fill="rgba(255,255,255,0.85)" font-family="sans-serif" font-size="22">${escapeXml(role)}</text>
+  ${textBlock(appearanceLines, 32, 310, 28, 'fill="rgba(255,255,255,0.9)" font-family="sans-serif" font-size="18"')}
+</svg>`;
+  return toDataUri(svg);
+}
+
+export interface StoryboardFrameOptions extends FrameOptions {
+  camera: string;
+  characterNames: string[];
+}
+
+export function buildStoryboardFrameSvg(opts: StoryboardFrameOptions): string {
+  const base = buildVideoFrameSvg(opts);
+  const cast =
+    opts.characterNames.length > 0
+      ? opts.characterNames.join(" · ")
+      : opts.language === "zh"
+        ? "无对白角色"
+        : "No cast";
+  const cameraLabel = opts.language === "zh" ? `机位 ${opts.camera}` : `Camera ${opts.camera}`;
+  const insert = `<text x="${Math.round(opts.width * 0.08)}" y="${Math.round(opts.height * 0.92)}" fill="rgba(255,255,255,0.75)" font-family="sans-serif" font-size="${Math.round(opts.width * 0.028)}">${escapeXml(cameraLabel)} · ${escapeXml(cast)}</text>`;
+  return base.replace("</svg>", `${insert}</svg>`);
+}
+
+export function renderStoryboardFrame(opts: StoryboardFrameOptions): string {
+  return toDataUri(buildStoryboardFrameSvg(opts));
+}

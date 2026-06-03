@@ -105,3 +105,96 @@ export interface PublishResult {
   message: string;
   publishedUrl?: string;
 }
+
+// --- 小说改编工作流 ---
+
+export type WorkflowStageId =
+  | "novel"
+  | "script"
+  | "characters"
+  | "storyboard"
+  | "video";
+
+export type WorkflowStageStatus = "pending" | "running" | "done" | "failed";
+
+export interface WorkflowStage {
+  id: WorkflowStageId;
+  label: string;
+  status: WorkflowStageStatus;
+  message?: string;
+}
+
+export interface NovelWorkflowInput {
+  novelText?: string;
+  title?: string;
+  language: Language;
+  aspectRatio: AspectRatio;
+  composeVideo?: boolean;
+}
+
+/** 分步执行工作流时客户端携带的累积状态 */
+export interface NovelWorkflowStepPayload {
+  step: WorkflowStageId;
+  title: string;
+  language: Language;
+  aspectRatio: AspectRatio;
+  composeVideo?: boolean;
+  novelText?: string;
+  synopsis?: string;
+  script?: ScriptBeat[];
+  characters?: NovelCharacter[];
+  storyboard?: StoryboardShot[];
+  stages?: WorkflowStage[];
+  workflowId?: string;
+}
+
+export interface ScriptBeat {
+  index: number;
+  act: string;
+  narration: string;
+  dialogue: string;
+  speaker?: string;
+}
+
+export interface NovelCharacter {
+  id: string;
+  name: string;
+  role: string;
+  appearance: string;
+  personality: string;
+  sceneIds: number[];
+  portrait: string;
+}
+
+export interface StoryboardShot {
+  index: number;
+  scriptBeatIndex: number;
+  characterIds: string[];
+  characterNames: string[];
+  heading: string;
+  action: string;
+  dialogue: string;
+  camera: string;
+  frame: string;
+  durationSec: number;
+}
+
+export interface NovelWorkflowResult {
+  workflowId: string;
+  input: NovelWorkflowInput;
+  stages: WorkflowStage[];
+  title: string;
+  synopsis: string;
+  script: ScriptBeat[];
+  characters: NovelCharacter[];
+  storyboard: StoryboardShot[];
+  video?: {
+    videoUrl: string;
+    width: number;
+    height: number;
+    durationSec: number;
+    hasNarration: boolean;
+    hasBgm: boolean;
+  };
+  generatedAt: string;
+}

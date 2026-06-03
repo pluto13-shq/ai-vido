@@ -1,9 +1,9 @@
-import { CreatorDashboard } from "@/components/creator-dashboard";
+import { AppShell } from "@/components/app-shell";
 
 export default function Home() {
   return (
-    <main className="min-h-screen bg-zinc-50">
-      <CreatorDashboard />
+    <main>
+      <AppShell />
     </main>
   );
 }
