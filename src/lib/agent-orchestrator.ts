@@ -1,4 +1,8 @@
-import { buildImageContent, buildVideoContent } from "@/lib/content-generator";
+import {
+  buildImageContent,
+  buildVideoContent,
+  enrichVideoScenesWithFrames,
+} from "@/lib/content-generator";
 import type { CreationJobInput, GeneratedAsset, JobResult } from "@/lib/types";
 
 function randomAssetId(prefix: string): string {
@@ -29,6 +33,21 @@ async function generateOneAsset(
   try {
     await new Promise((resolve) => setTimeout(resolve, 60));
 
+    let video = useVideo
+      ? buildVideoContent(input.topic, input.language, index, input.aspectRatio)
+      : undefined;
+
+    if (video) {
+      const scenes = await enrichVideoScenesWithFrames(
+        input.topic,
+        video.scenes,
+        input.language,
+        input.aspectRatio,
+        index
+      );
+      video = { ...video, scenes };
+    }
+
     return {
       assetId: randomAssetId(mode),
       mode,
@@ -36,9 +55,7 @@ async function generateOneAsset(
       language: input.language,
       tags: buildTags(input.topic),
       status: "success",
-      video: useVideo
-        ? buildVideoContent(input.topic, input.language, index, input.aspectRatio)
-        : undefined,
+      video,
       image: useVideo
         ? undefined
         : buildImageContent(input.topic, input.language, index),

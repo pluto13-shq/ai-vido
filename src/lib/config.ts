@@ -1,19 +1,12 @@
 import type { Platform } from "@/lib/types";
 
 export const runtimeConfig = {
-  grokApiKey: process.env.GROK_API_KEY ?? "",
-  veoApiKey: process.env.VEO_API_KEY ?? "",
-  seedanceApiKey: process.env.SEEDANCE_API_KEY ?? "",
-  nanoBananaApiKey: process.env.NANO_BANANA_API_KEY ?? "",
+  llmApiKey: process.env.LLM_API_KEY ?? "",
+  llmBaseUrl: process.env.LLM_BASE_URL ?? "",
+  llmModel: process.env.LLM_MODEL ?? "",
 };
 
-export const integrationState = {
-  videoEnabled:
-    Boolean(runtimeConfig.grokApiKey) ||
-    Boolean(runtimeConfig.veoApiKey) ||
-    Boolean(runtimeConfig.seedanceApiKey),
-  imageEnabled: Boolean(runtimeConfig.nanoBananaApiKey),
-};
+export const llmEnabled = Boolean(runtimeConfig.llmApiKey);
 
 export interface PlatformOAuthConfig {
   clientId: string;

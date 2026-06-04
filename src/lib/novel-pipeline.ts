@@ -1,7 +1,21 @@
+import { renderCharacterPortrait } from "@/lib/media-renderer";
+import { generateImageDataUri, isImageConfigured } from "@/lib/providers/image";
 import {
-  renderCharacterPortrait,
-  renderStoryboardFrame,
-} from "@/lib/media-renderer";
+  formatBalanceWarning,
+  isBalanceOrQuotaError,
+} from "@/lib/api-errors";
+import {
+  generateNovelTextFromTitle,
+  generateScriptFromNovel,
+  isLlmConfigured,
+} from "@/lib/providers/llm";
+import { resolveSceneFrame } from "@/lib/scene-visual";
+import {
+  buildTitleLogline,
+  generateNovelFromTitleFallback,
+} from "@/lib/story-templates";
+import { buildEnglishVideoPrompt } from "@/lib/short-drama-workflow";
+import { buildRealisticPortraitPrompt } from "@/lib/visual-prompts";
 import { composeFromStoryboard } from "@/lib/video-compose";
 import type {
   AspectRatio,
@@ -134,26 +148,34 @@ function inferTitle(text: string, language: Language): string {
   return language === "zh" ? "小说改编短剧" : "Novel Adaptation";
 }
 
-export function generateNovelFromTitle(title: string, language: Language): string {
-  const t = title.trim();
-  if (language === "zh") {
-    return [
-      `《${t}》的故事，从一个看似普通的夜晚开始。`,
-      `主角站在人生的十字路口，望着窗外城市的灯火，心里只有一个念头：不能再这样下去了。`,
-      `「如果《${t}》只是传说，那我偏要把它写成现实。」他握紧手机，打开了那款被称为「AI内容工厂」的工具。`,
-      `第一周，数据平平；第二周，有一条内容突然爆了；第三周，账号矩阵同时起量。`,
-      `曾经质疑他的人开始私信求方法，而他已经明白：缺的从来不是努力，而是一套能复制的系统。`,
-      `演讲台上，灯光落下。台下掌声雷动——《${t}》，终于从标题变成了被看见的故事。`,
-    ].join("\n\n");
+export { generateNovelFromTitleFallback } from "@/lib/story-templates";
+
+/** 根据标题生成正文：已配置 LLM 时走 API，余额不足则回退标题模板 */
+export async function generateNovelFromTitle(
+  title: string,
+  language: Language,
+  options?: { preferLocal?: boolean }
+): Promise<{ text: string; usedLocal: boolean; warning?: string }> {
+  if (options?.preferLocal || !isLlmConfigured()) {
+    return {
+      text: generateNovelFromTitleFallback(title, language),
+      usedLocal: true,
+    };
   }
-  return [
-    `The story of "${t}" begins on an ordinary night that does not feel ordinary at all.`,
-    `The protagonist stands at a crossroads, city lights outside the window, one thought in mind: this cannot go on.`,
-    `"If «${t}» is only a title, I will make it real." They open a tool called the AI Content Factory.`,
-    `Week one is quiet. Week two, one piece breaks out. Week three, the whole matrix starts moving.`,
-    `Skeptics turn into DMs asking for the playbook. The truth is clear: effort was never the bottleneck—the system was.`,
-    `On stage, under the lights, applause rolls in. "${t}" is no longer just a title. It is a story people can see.`,
-  ].join("\n\n");
+  try {
+    const text = await generateNovelTextFromTitle(title, language);
+    return { text, usedLocal: false };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (isBalanceOrQuotaError(msg)) {
+      return {
+        text: generateNovelFromTitleFallback(title, language),
+        usedLocal: true,
+        warning: formatBalanceWarning(language),
+      };
+    }
+    throw error;
+  }
 }
 
 function buildSynopsis(paragraphs: string[], language: Language): string {
@@ -165,7 +187,25 @@ function buildSynopsis(paragraphs: string[], language: Language): string {
   return trimmed || "A novel story ready for adaptation.";
 }
 
-function novelToScript(
+async function novelToScript(
+  title: string,
+  paragraphs: string[],
+  language: Language
+): Promise<ScriptBeat[]> {
+  const novelText = paragraphs.join("\n\n");
+  if (isLlmConfigured()) {
+    try {
+      return await generateScriptFromNovel(title, novelText, language);
+    } catch (error) {
+      if (!(error instanceof Error && isBalanceOrQuotaError(error.message))) {
+        throw error;
+      }
+    }
+  }
+  return novelToScriptFromParagraphs(paragraphs, language);
+}
+
+function novelToScriptFromParagraphs(
   paragraphs: string[],
   language: Language
 ): ScriptBeat[] {
@@ -188,40 +228,59 @@ function novelToScript(
   });
 }
 
-function buildCharacters(
+async function buildCharacters(
   names: string[],
   script: ScriptBeat[],
-  language: Language
-): NovelCharacter[] {
-  return names.map((name, index) => {
-    const role = inferRole(name, index, language);
-    const sceneIds = script
-      .filter(
-        (beat) =>
-          beat.speaker === name ||
-          beat.narration.includes(name) ||
-          beat.dialogue.includes(name)
-      )
-      .map((beat) => beat.index);
+  language: Language,
+  options?: { generateSceneImages?: boolean }
+): Promise<NovelCharacter[]> {
+  const useAiPortrait =
+    options?.generateSceneImages === true && isImageConfigured();
 
-    const assignedScenes =
-      sceneIds.length > 0 ? sceneIds : index === 0 ? script.map((b) => b.index) : [];
+  return Promise.all(
+    names.map(async (name, index) => {
+      const role = inferRole(name, index, language);
+      const appearance = defaultAppearance(name, role, language);
+      const sceneIds = script
+        .filter(
+          (beat) =>
+            beat.speaker === name ||
+            beat.narration.includes(name) ||
+            beat.dialogue.includes(name)
+        )
+        .map((beat) => beat.index);
 
-    return {
-      id: `char_${index + 1}`,
-      name,
-      role,
-      appearance: defaultAppearance(name, role, language),
-      personality: defaultPersonality(name, language),
-      sceneIds: assignedScenes,
-      portrait: renderCharacterPortrait(
+      const assignedScenes =
+        sceneIds.length > 0 ? sceneIds : index === 0 ? script.map((b) => b.index) : [];
+
+      let portrait = renderCharacterPortrait(name, role, appearance, index);
+
+      if (useAiPortrait) {
+        try {
+          const prompt = buildRealisticPortraitPrompt(
+            name,
+            role,
+            appearance,
+            language
+          );
+          const aiPortrait = await generateImageDataUri(prompt);
+          if (aiPortrait) portrait = aiPortrait;
+        } catch {
+          /* 回退 SVG 立绘 */
+        }
+      }
+
+      return {
+        id: `char_${index + 1}`,
         name,
         role,
-        defaultAppearance(name, role, language),
-        index
-      ),
-    };
-  });
+        appearance,
+        personality: defaultPersonality(name, language),
+        sceneIds: assignedScenes,
+        portrait,
+      };
+    })
+  );
 }
 
 function resolveCharactersForBeat(
@@ -239,58 +298,70 @@ function resolveCharactersForBeat(
   return characters.slice(0, 1);
 }
 
-function scriptToStoryboard(
+async function scriptToStoryboard(
+  title: string,
   script: ScriptBeat[],
   characters: NovelCharacter[],
   language: Language,
-  aspectRatio: AspectRatio
-): StoryboardShot[] {
-  const preview =
-    aspectRatio === "9:16"
-      ? { width: 360, height: 640 }
-      : { width: 640, height: 360 };
+  aspectRatio: AspectRatio,
+  options?: { generateSceneImages?: boolean }
+): Promise<StoryboardShot[]> {
+  const generateImages = options?.generateSceneImages === true;
   const cameras = language === "zh" ? CAMERAS_ZH : CAMERAS_EN;
 
-  return script.map((beat, index) => {
-    const cast = resolveCharactersForBeat(beat, characters);
-    const camera = cameras[index % cameras.length];
-    const heading =
-      language === "zh"
-        ? `${beat.act} · 场景 ${beat.index}`
-        : `${beat.act} · Scene ${beat.index}`;
-    const action = beat.narration;
-    const dialogue = beat.dialogue
-      ? beat.speaker
-        ? `${beat.speaker}：${beat.dialogue}`
-        : beat.dialogue
-      : language === "zh"
-        ? "（无对白，旁白推进）"
-        : "(No dialogue, narration only)";
+  return Promise.all(
+    script.map(async (beat, index) => {
+      const cast = resolveCharactersForBeat(beat, characters);
+      const camera = cameras[index % cameras.length];
+      const heading =
+        language === "zh"
+          ? `${beat.act} · 场景 ${beat.index}`
+          : `${beat.act} · Scene ${beat.index}`;
+      const action = beat.narration;
+      const dialogue = beat.dialogue
+        ? beat.speaker
+          ? `${beat.speaker}：${beat.dialogue}`
+          : beat.dialogue
+        : language === "zh"
+          ? "（无对白，旁白推进）"
+          : "(No dialogue, narration only)";
 
-    return {
-      index: beat.index,
-      scriptBeatIndex: beat.index,
-      characterIds: cast.map((c) => c.id),
-      characterNames: cast.map((c) => c.name),
-      heading,
-      action,
-      dialogue,
-      camera,
-      durationSec: beat.dialogue ? 4 : 3,
-      frame: renderStoryboardFrame({
-        width: preview.width,
-        height: preview.height,
-        sceneIndex: beat.index,
+      let frame = "";
+      if (generateImages) {
+        const resolved = await resolveSceneFrame({
+          title,
+          sceneIndex: beat.index,
+          heading,
+          action,
+          dialogue,
+          variant: index,
+          language,
+          aspectRatio,
+          camera,
+          characterNames: cast.map((c) => c.name),
+        });
+        frame = resolved.frame;
+      }
+
+      const shot: StoryboardShot = {
+        index: beat.index,
+        scriptBeatIndex: beat.index,
+        characterIds: cast.map((c) => c.id),
+        characterNames: cast.map((c) => c.name),
         heading,
         action,
         dialogue,
-        variant: index,
-        language,
         camera,
-        characterNames: cast.map((c) => c.name),
-      }),
-    };
-  });
+        durationSec: beat.dialogue ? 4 : 3,
+        frame,
+      };
+
+      return {
+        ...shot,
+        englishPrompt: buildEnglishVideoPrompt(title, shot, language),
+      };
+    })
+  );
 }
 
 export async function runNovelWorkflowStep(
@@ -321,14 +392,25 @@ export async function runNovelWorkflowStep(
   let characters = payload.characters ?? [];
   let storyboard = payload.storyboard ?? [];
   let video: NovelWorkflowResult["video"];
+  let warning: string | undefined;
 
   switch (payload.step) {
     case "novel": {
       setStage("novel", "running");
-      novelText = generateNovelFromTitle(title, payload.language);
+      const novel = await generateNovelFromTitle(title, payload.language, {
+        preferLocal: payload.preferLocalTemplate,
+      });
+      novelText = novel.text;
+      warning = novel.warning;
       const paragraphs = splitParagraphs(novelText);
       synopsis = buildSynopsis(paragraphs, payload.language);
-      setStage("novel", "done", `已根据标题生成 ${paragraphs.length} 段正文`);
+      setStage(
+        "novel",
+        "done",
+        novel.usedLocal
+          ? `本地模板已生成 ${paragraphs.length} 段正文（紧扣标题）`
+          : `AI 已生成 ${paragraphs.length} 段正文`
+      );
       break;
     }
     case "script": {
@@ -339,7 +421,7 @@ export async function runNovelWorkflowStep(
       setStage("script", "running");
       const paragraphs = splitParagraphs(novelText);
       synopsis = buildSynopsis(paragraphs, payload.language);
-      script = novelToScript(paragraphs, payload.language);
+      script = await novelToScript(title, paragraphs, payload.language);
       setStage("script", "done", `已生成 ${script.length} 场剧本`);
       break;
     }
@@ -351,7 +433,9 @@ export async function runNovelWorkflowStep(
       setStage("script", "done");
       setStage("characters", "running");
       const names = extractCharacterNames(novelText, payload.language);
-      characters = buildCharacters(names, script, payload.language);
+      characters = await buildCharacters(names, script, payload.language, {
+        generateSceneImages: payload.generateSceneImages === true,
+      });
       setStage("characters", "done", `已提取 ${characters.length} 个角色`);
       break;
     }
@@ -363,13 +447,26 @@ export async function runNovelWorkflowStep(
       setStage("script", "done");
       setStage("characters", "done");
       setStage("storyboard", "running");
-      storyboard = scriptToStoryboard(
+      storyboard = await scriptToStoryboard(
+        title,
         script,
         characters,
         payload.language,
-        payload.aspectRatio
+        payload.aspectRatio,
+        { generateSceneImages: payload.generateSceneImages === true }
       );
-      setStage("storyboard", "done", `已生成 ${storyboard.length} 个分镜`);
+      setStage(
+        "storyboard",
+        "done",
+        payload.generateSceneImages
+          ? isImageConfigured()
+            ? `已生成 ${storyboard.length} 个分镜（含画面）`
+            : `已生成 ${storyboard.length} 个分镜（含画面尝试）`
+          : `已生成 ${storyboard.length} 个分镜与英文视频提示词`
+      );
+      if (payload.composeVideo !== true) {
+        setStage("video", "done", "外链：可灵 / 即梦 / Sora / Seedance");
+      }
       break;
     }
     case "video": {
@@ -428,6 +525,7 @@ export async function runNovelWorkflowStep(
       composeVideo: payload.composeVideo,
     },
     stages,
+    warning,
     title,
     synopsis,
     script,
@@ -455,9 +553,11 @@ export async function runNovelWorkflow(
   };
 
   const title = input.title?.trim();
+  const novelGenerated = title
+    ? await generateNovelFromTitle(title, input.language)
+    : null;
   const novelText =
-    input.novelText?.trim() ||
-    (title ? generateNovelFromTitle(title, input.language) : "");
+    input.novelText?.trim() || novelGenerated?.text || "";
   const paragraphs = splitParagraphs(novelText);
   if (paragraphs.length === 0) {
     throw new Error("请提供作品标题或小说正文");
@@ -467,21 +567,27 @@ export async function runNovelWorkflow(
 
   setStage("script", "running");
   const resolvedTitle = title || inferTitle(novelText, input.language);
-  const synopsis = buildSynopsis(paragraphs, input.language);
-  const script = novelToScript(paragraphs, input.language);
+  const synopsis =
+    buildSynopsis(paragraphs, input.language) ||
+    buildTitleLogline(resolvedTitle, input.language);
+  const script = await novelToScript(resolvedTitle, paragraphs, input.language);
   setStage("script", "done", `已生成 ${script.length} 场剧本`);
 
   setStage("characters", "running");
   const names = extractCharacterNames(novelText, input.language);
-  const characters = buildCharacters(names, script, input.language);
+  const characters = await buildCharacters(names, script, input.language, {
+    generateSceneImages: input.generateSceneImages === true,
+  });
   setStage("characters", "done", `已提取 ${characters.length} 个角色`);
 
   setStage("storyboard", "running");
-  const storyboard = scriptToStoryboard(
+  const storyboard = await scriptToStoryboard(
+    resolvedTitle,
     script,
     characters,
     input.language,
-    input.aspectRatio
+    input.aspectRatio,
+    { generateSceneImages: input.generateSceneImages === true }
   );
   setStage("storyboard", "done", `已生成 ${storyboard.length} 个分镜`);
 

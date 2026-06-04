@@ -8,7 +8,7 @@ import type {
   WorkflowStageId,
 } from "@/lib/types";
 
-export const maxDuration = 180;
+export const maxDuration = 300;
 
 function isLanguage(value: unknown): value is Language {
   return value === "zh" || value === "en";
@@ -49,7 +49,8 @@ export async function POST(request: Request) {
       title,
       language,
       aspectRatio,
-      composeVideo: body.composeVideo !== false,
+      composeVideo: body.composeVideo === true,
+      generateSceneImages: body.generateSceneImages === true,
       novelText: typeof body.novelText === "string" ? body.novelText : undefined,
       synopsis: typeof body.synopsis === "string" ? body.synopsis : undefined,
       script: Array.isArray(body.script) ? body.script : undefined,
@@ -57,6 +58,7 @@ export async function POST(request: Request) {
       storyboard: Array.isArray(body.storyboard) ? body.storyboard : undefined,
       stages: Array.isArray(body.stages) ? body.stages : undefined,
       workflowId: typeof body.workflowId === "string" ? body.workflowId : undefined,
+      preferLocalTemplate: body.preferLocalTemplate === true,
     };
 
     try {
@@ -82,7 +84,8 @@ export async function POST(request: Request) {
     title: title || undefined,
     language,
     aspectRatio,
-    composeVideo: body.composeVideo !== false,
+    composeVideo: body.composeVideo === true,
+    generateSceneImages: body.generateSceneImages === true,
   };
 
   try {

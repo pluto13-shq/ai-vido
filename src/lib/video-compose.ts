@@ -3,11 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import ffmpegPath from "ffmpeg-static";
 import ffmpeg from "fluent-ffmpeg";
-import { Resvg } from "@resvg/resvg-js";
-import {
-  buildStoryboardFrameSvg,
-  buildVideoFrameSvg,
-} from "@/lib/media-renderer";
+import { frameToPngBuffer } from "@/lib/frame-utils";
+import { resolveSceneFrame } from "@/lib/scene-visual";
 import { synthesizeSpeech } from "@/lib/providers/tts";
 import { buildVideoContent } from "@/lib/content-generator";
 import {
@@ -46,12 +43,7 @@ interface SceneForCompose {
   action: string;
   dialogue: string;
   durationSec: number;
-  svg: string;
-}
-
-function svgToPng(svg: string, width: number): Buffer {
-  const resvg = new Resvg(svg, { fitTo: { mode: "width", value: width } });
-  return Buffer.from(resvg.render().asPng());
+  frame: string;
 }
 
 async function bgmFilePath(): Promise<string | null> {
@@ -79,7 +71,7 @@ async function runFfmpegCompose(
 
   const scenePaths: string[] = [];
   for (const scene of scenes) {
-    const png = svgToPng(scene.svg, dim.width);
+    const png = await frameToPngBuffer(scene.frame, dim.width);
     const p = path.join(workDir, `scene_${scene.index}.png`);
     await fs.writeFile(p, png);
     scenePaths.push(p);
@@ -194,24 +186,13 @@ export async function composeFromStoryboard(
   aspectRatio: AspectRatio
 ): Promise<ComposeResult> {
   const dim = ASPECT_DIMENSIONS[aspectRatio];
-  const scenes: SceneForCompose[] = storyboard.map((shot, index) => ({
+  const scenes: SceneForCompose[] = storyboard.map((shot) => ({
     index: shot.index,
     heading: shot.heading,
     action: shot.action,
     dialogue: shot.dialogue,
     durationSec: shot.durationSec,
-    svg: buildStoryboardFrameSvg({
-      width: dim.width,
-      height: dim.height,
-      sceneIndex: shot.index,
-      heading: shot.heading,
-      action: shot.action,
-      dialogue: shot.dialogue,
-      variant: index,
-      language,
-      camera: shot.camera,
-      characterNames: shot.characterNames,
-    }),
+    frame: shot.frame,
   }));
 
   const narrationText = [
@@ -232,23 +213,28 @@ export async function composeVideo(input: ComposeInput): Promise<ComposeResult> 
     input.aspectRatio
   );
 
-  const scenes: SceneForCompose[] = content.scenes.map((scene) => ({
-    index: scene.index,
-    heading: scene.heading,
-    action: scene.action,
-    dialogue: scene.dialogue,
-    durationSec: DEFAULT_SECONDS_PER_SCENE,
-    svg: buildVideoFrameSvg({
-      width: dim.width,
-      height: dim.height,
-      sceneIndex: scene.index,
-      heading: scene.heading,
-      action: scene.action,
-      dialogue: scene.dialogue,
-      variant,
-      language: input.language,
-    }),
-  }));
+  const scenes: SceneForCompose[] = await Promise.all(
+    content.scenes.map(async (scene) => {
+      const { frame } = await resolveSceneFrame({
+        title: input.topic,
+        sceneIndex: scene.index,
+        heading: scene.heading,
+        action: scene.action,
+        dialogue: scene.dialogue,
+        variant,
+        language: input.language,
+        aspectRatio: input.aspectRatio,
+      });
+      return {
+        index: scene.index,
+        heading: scene.heading,
+        action: scene.action,
+        dialogue: scene.dialogue,
+        durationSec: DEFAULT_SECONDS_PER_SCENE,
+        frame,
+      };
+    })
+  );
 
   const narrationText = [
     content.logline,

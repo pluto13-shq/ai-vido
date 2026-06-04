@@ -16,7 +16,7 @@ export function AppShell() {
           <TabButton
             active={mode === "novel"}
             onClick={() => setMode("novel")}
-            label="小说改编工作流"
+            label="AI短剧生产"
           />
           <TabButton
             active={mode === "quick"}

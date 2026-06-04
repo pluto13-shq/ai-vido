@@ -130,6 +130,8 @@ export interface NovelWorkflowInput {
   language: Language;
   aspectRatio: AspectRatio;
   composeVideo?: boolean;
+  /** 为 false 时不生成 AI 分镜图（交给可灵/即梦等外部工具） */
+  generateSceneImages?: boolean;
 }
 
 /** 分步执行工作流时客户端携带的累积状态 */
@@ -146,6 +148,9 @@ export interface NovelWorkflowStepPayload {
   storyboard?: StoryboardShot[];
   stages?: WorkflowStage[];
   workflowId?: string;
+  /** 为 true 时跳过 LLM，使用本地标题模板（余额不足时自动开启） */
+  preferLocalTemplate?: boolean;
+  generateSceneImages?: boolean;
 }
 
 export interface ScriptBeat {
@@ -176,6 +181,8 @@ export interface StoryboardShot {
   dialogue: string;
   camera: string;
   frame: string;
+  /** 可灵 / 即梦 / Sora / Seedance 用英文提示词 */
+  englishPrompt?: string;
   durationSec: number;
 }
 
@@ -183,6 +190,8 @@ export interface NovelWorkflowResult {
   workflowId: string;
   input: NovelWorkflowInput;
   stages: WorkflowStage[];
+  /** 非致命提示（如余额不足已回退本地模板） */
+  warning?: string;
   title: string;
   synopsis: string;
   script: ScriptBeat[];

@@ -1,6 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { isBalanceOrQuotaError } from "@/lib/api-errors";
+import { isSvgFrame } from "@/lib/frame-detect";
+import { ShortDramaToolsPanel } from "@/components/short-drama-tools-panel";
+import { buildStageDelivery } from "@/lib/short-drama-workflow";
 import type {
   AspectRatio,
   Language,
@@ -15,14 +19,13 @@ const STEPS: WorkflowStageId[] = [
   "script",
   "characters",
   "storyboard",
-  "video",
 ];
 
 const STEP_HINTS: Record<WorkflowStageId, string> = {
-  novel: "根据标题生成小说正文",
+  novel: "生成短剧正文素材",
   script: "改编为分场剧本",
-  characters: "提取并设定角色",
-  storyboard: "生成分镜脚本与画面",
+  characters: "提取角色设定",
+  storyboard: "生成分镜脚本与英文视频提示词",
   video: "合成视频片段",
 };
 
@@ -37,6 +40,7 @@ export function NovelWorkflowPanel() {
   const [activeStage, setActiveStage] = useState<string>("script");
   const [openShot, setOpenShot] = useState<number | null>(1);
   const [showNovelBody, setShowNovelBody] = useState(false);
+  const [warning, setWarning] = useState("");
 
   async function runStepByStep() {
     const trimmedTitle = title.trim();
@@ -46,6 +50,7 @@ export function NovelWorkflowPanel() {
     }
 
     setError("");
+    setWarning("");
     setLoading(true);
     setResult(null);
     setShowNovelBody(false);
@@ -54,31 +59,64 @@ export function NovelWorkflowPanel() {
       title: trimmedTitle,
       language,
       aspectRatio,
-      composeVideo: true,
+      composeVideo: false,
+      generateSceneImages: false,
     };
+    let preferLocal = false;
 
     try {
       for (const step of STEPS) {
         setCurrentStep(step);
-        const response = await fetch("/api/workflow", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...accumulated, step }),
-        });
 
-        const body = (await response.json().catch(() => ({}))) as NovelWorkflowResult & {
+        async function callWorkflow(useLocal: boolean) {
+          return fetch("/api/workflow", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ...accumulated,
+              step,
+              preferLocalTemplate: useLocal,
+            }),
+          });
+        }
+
+        let response = await callWorkflow(preferLocal);
+        let body = (await response.json().catch(() => ({}))) as NovelWorkflowResult & {
           message?: string;
         };
 
+        if (
+          !response.ok &&
+          body.message &&
+          isBalanceOrQuotaError(body.message) &&
+          !preferLocal
+        ) {
+          preferLocal = true;
+          setWarning(
+            "账户余额不足，已自动改用本地故事模板继续生成（剧情仍会根据作品标题匹配）。"
+          );
+          response = await callWorkflow(true);
+          body = (await response.json().catch(() => ({}))) as NovelWorkflowResult & {
+            message?: string;
+          };
+        }
+
         if (!response.ok) {
           throw new Error(body.message ?? `步骤「${STEP_HINTS[step]}」失败`);
+        }
+
+        if (body.warning) {
+          setWarning(body.warning);
+          preferLocal = true;
         }
 
         accumulated = {
           title: trimmedTitle,
           language,
           aspectRatio,
-          composeVideo: true,
+          composeVideo: false,
+          generateSceneImages: false,
+          preferLocalTemplate: preferLocal,
           workflowId: body.workflowId,
           novelText: body.input.novelText,
           synopsis: body.synopsis,
@@ -99,8 +137,6 @@ export function NovelWorkflowPanel() {
         } else if (step === "storyboard") {
           setActiveStage("storyboard");
           setOpenShot(1);
-        } else if (step === "video") {
-          setActiveStage("video");
         }
       }
     } catch (err) {
@@ -116,14 +152,15 @@ export function NovelWorkflowPanel() {
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-10">
       <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
-        <h1 className="text-2xl font-semibold text-zinc-900">小说改编工作流</h1>
+        <h1 className="text-2xl font-semibold text-zinc-900">AI短剧生产</h1>
         <p className="mt-2 text-sm text-zinc-600">
-          先输入标题，系统将按步骤生成：小说正文 → 剧本 → 角色 → 分镜 → 视频。
+          输入标题后生成脚本、角色与分镜；再按工具分工表将内容复制到 ChatGPT / 可灵 /
+          剪映等外部工具完成视频、配音与成片。
         </p>
       </section>
 
       <section className="rounded-2xl border border-zinc-200 bg-white p-6">
-        <h2 className="text-lg font-semibold text-zinc-900">开始改编</h2>
+        <h2 className="text-lg font-semibold text-zinc-900">开始创作</h2>
         <div className="mt-4 grid gap-4 md:grid-cols-3">
           <div className="md:col-span-2">
             <label className="block text-sm font-medium text-zinc-700">作品标题</label>
@@ -170,13 +207,20 @@ export function NovelWorkflowPanel() {
             ? `正在${STEP_HINTS[currentStep]}…`
             : loading
               ? "逐步生成中…"
-              : "开始逐步生成"}
+              : "生成脚本与分镜"}
         </button>
+        {warning ? (
+          <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            {warning}
+          </p>
+        ) : null}
         {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
       </section>
 
       {result ? (
         <>
+          <ShortDramaToolsPanel result={result} />
+
           <section className="rounded-2xl border border-zinc-200 bg-white p-6">
             <h2 className="text-lg font-semibold text-zinc-900">流水线进度</h2>
             <div className="mt-4 grid gap-3 md:grid-cols-5">
@@ -213,7 +257,7 @@ export function NovelWorkflowPanel() {
                 { id: "script", label: "剧本" },
                 { id: "characters", label: "角色" },
                 { id: "storyboard", label: "分镜" },
-                { id: "video", label: "视频" },
+                { id: "prompts", label: "英文提示词" },
               ].map((tab) => (
                 <button
                   key={tab.id}
@@ -292,17 +336,29 @@ export function NovelWorkflowPanel() {
                     </button>
                     {openShot === shot.index ? (
                       <div className="grid gap-4 border-t border-zinc-100 px-4 py-3 md:grid-cols-[200px_1fr]">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={shot.frame}
-                          alt={`分镜 ${shot.index}`}
-                          className="w-full max-w-[200px] rounded-xl border border-zinc-200"
-                        />
+                        {shot.frame ? (
+                          /* eslint-disable-next-line @next/next/no-img-element */
+                          <img
+                            src={shot.frame}
+                            alt={`分镜 ${shot.index}`}
+                            className="w-full max-w-[200px] rounded-xl border border-zinc-200"
+                          />
+                        ) : (
+                          <div className="flex h-40 w-full max-w-[200px] items-center justify-center rounded-xl border border-dashed border-zinc-300 bg-zinc-50 text-xs text-zinc-500">
+                            视频由外部工具生成
+                          </div>
+                        )}
                         <div className="space-y-2 text-sm text-zinc-700">
                           <p>机位：{shot.camera}</p>
                           <p>角色：{shot.characterNames.join("、") || "—"}</p>
                           <p>画面：{shot.action}</p>
                           <p>台词：{shot.dialogue}</p>
+                          {shot.englishPrompt ? (
+                            <p className="text-xs text-indigo-700">
+                              EN：{shot.englishPrompt.slice(0, 160)}
+                              {shot.englishPrompt.length > 160 ? "…" : ""}
+                            </p>
+                          ) : null}
                           <p className="text-zinc-400">时长：{shot.durationSec}s</p>
                         </div>
                       </div>
@@ -312,14 +368,26 @@ export function NovelWorkflowPanel() {
               </div>
             ) : null}
 
-            {activeStage === "video" ? (
+            {activeStage === "prompts" && result.storyboard.length > 0 ? (
               <div className="mt-4">
+                <p className="mb-2 text-sm text-zinc-600">
+                  复制到 可灵 / 即梦 / Sora / Seedance 生成各镜头视频。
+                </p>
+                <pre className="max-h-96 overflow-auto rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-xs leading-relaxed whitespace-pre-wrap text-zinc-800">
+                  {buildStageDelivery("video", result)}
+                </pre>
+              </div>
+            ) : null}
+
+            {activeStage === "video" ? (
+              <div className="mt-4 space-y-4">
                 {result.video?.videoUrl ? (
                   <div className="max-w-md">
                     <video
                       src={result.video.videoUrl}
                       controls
-                      className="w-full rounded-xl border border-zinc-200"
+                      playsInline
+                      className="w-full rounded-xl border border-zinc-200 bg-black"
                     />
                     <p className="mt-2 text-sm text-zinc-600">
                       {result.video.width}×{result.video.height} · {result.video.durationSec}s
@@ -337,16 +405,41 @@ export function NovelWorkflowPanel() {
                 ) : (
                   <p className="text-sm text-zinc-500">
                     {loading && currentStep === "video"
-                      ? "正在合成视频…"
+                      ? "正在合成写实分镜视频（每镜约需 30～90 秒）…"
                       : "视频合成未完成。请检查 ffmpeg 是否可用，或查看流水线进度中的错误信息。"}
                   </p>
                 )}
+                {result.storyboard.length > 0 ? (
+                  <div>
+                    <p className="mb-2 text-sm font-medium text-zinc-800">成片分镜（写实剧照）</p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {result.storyboard.map((shot) => (
+                        <div
+                          key={shot.index}
+                          className="overflow-hidden rounded-xl border border-zinc-200"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={shot.frame}
+                            alt={`分镜 ${shot.index}`}
+                            className="aspect-[9/16] w-full object-cover"
+                          />
+                          <p className="px-2 py-1.5 text-xs text-zinc-600">
+                            镜头 {shot.index}
+                            {isSvgFrame(shot.frame) ? " · 文字卡片（绘图失败）" : " · 写实图"}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : null}
 
             {!loading &&
             result.script.length === 0 &&
-            activeStage !== "video" ? (
+            activeStage !== "video" &&
+            activeStage !== "prompts" ? (
               <p className="mt-4 text-sm text-zinc-500">该步骤内容将在生成后显示。</p>
             ) : null}
           </section>
