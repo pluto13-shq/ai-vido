@@ -4,9 +4,7 @@ import path from "node:path";
 import ffmpegPath from "ffmpeg-static";
 import ffmpeg from "fluent-ffmpeg";
 import { frameToPngBuffer } from "@/lib/frame-utils";
-import { resolveSceneFrame } from "@/lib/scene-visual";
 import { synthesizeSpeech } from "@/lib/providers/tts";
-import { buildVideoContent } from "@/lib/content-generator";
 import {
   ASPECT_DIMENSIONS,
   type AspectRatio,
@@ -16,15 +14,6 @@ import {
 
 if (ffmpegPath) {
   ffmpeg.setFfmpegPath(ffmpegPath);
-}
-
-const DEFAULT_SECONDS_PER_SCENE = 3.5;
-
-export interface ComposeInput {
-  topic: string;
-  language: Language;
-  aspectRatio: AspectRatio;
-  variant?: number;
 }
 
 export interface ComposeResult {
@@ -201,46 +190,4 @@ export async function composeFromStoryboard(
   ].join(" ");
 
   return runFfmpegCompose(scenes, dim, narrationText, language);
-}
-
-export async function composeVideo(input: ComposeInput): Promise<ComposeResult> {
-  const variant = input.variant ?? 0;
-  const dim = ASPECT_DIMENSIONS[input.aspectRatio];
-  const content = buildVideoContent(
-    input.topic,
-    input.language,
-    variant,
-    input.aspectRatio
-  );
-
-  const scenes: SceneForCompose[] = await Promise.all(
-    content.scenes.map(async (scene) => {
-      const { frame } = await resolveSceneFrame({
-        title: input.topic,
-        sceneIndex: scene.index,
-        heading: scene.heading,
-        action: scene.action,
-        dialogue: scene.dialogue,
-        variant,
-        language: input.language,
-        aspectRatio: input.aspectRatio,
-      });
-      return {
-        index: scene.index,
-        heading: scene.heading,
-        action: scene.action,
-        dialogue: scene.dialogue,
-        durationSec: DEFAULT_SECONDS_PER_SCENE,
-        frame,
-      };
-    })
-  );
-
-  const narrationText = [
-    content.logline,
-    ...content.scenes.map((s) => s.dialogue),
-    content.voiceover,
-  ].join(" ");
-
-  return runFfmpegCompose(scenes, dim, narrationText, input.language);
 }
